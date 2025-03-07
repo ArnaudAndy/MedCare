@@ -1,15 +1,15 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const mysql = require('mysql2');
-const crypto = require('crypto'); // For data encryption
+const crypto = require('crypto');
 const twilio = require('twilio');
-require('dotenv').config();  // Load environment variables
+require('dotenv').config();
 const cors = require('cors');
 
 const accountSid = process.env.ACCOUNT_SID;
 const authToken = process.env.AUTH_TOKEN;
 const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
-const encryptionKey = process.env.ENCRYPTION_KEY || 'default_secret_key'; // 32-byte key for AES encryption
+const encryptionKey = process.env.ENCRYPTION_KEY || '01234567890123456789012345678901'; // 32-byte key
 
 const client = twilio(accountSid, authToken);
 
@@ -25,103 +25,45 @@ const app = express();
 app.use(bodyParser.json());
 app.use(cors());
 
+
 let verificationCodes = {};
 
-// Function to Encrypt Medical Data
+// 🔹 Helper function to generate a 16-byte IV
+const generateIV = () => crypto.randomBytes(16);
+
+// 🔹 Encrypt Data
 const encryptData = (data) => {
-    const cipher = crypto.createCipheriv('aes-256-cbc', encryptionKey.substring(0, 32), encryptionKey.substring(0, 16));
+    const key = Buffer.from(encryptionKey, 'utf8');
+    const iv = generateIV();
+    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+    
     let encrypted = cipher.update(data, 'utf8', 'hex');
     encrypted += cipher.final('hex');
-    return encrypted;
+
+    return iv.toString('hex') + encrypted; // Store IV + encrypted data
 };
 
-// Function to Decrypt Medical Data
+// 🔹 Decrypt Data
 const decryptData = (encryptedData) => {
-    const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey.substring(0, 32), encryptionKey.substring(0, 16));
-    let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-};
-
-// Send SMS function
-const sendSms = async (phoneNumber, message) => {
     try {
-        const response = await client.messages.create({
-            body: message,
-            from: twilioPhoneNumber,
-            to: `+237${phoneNumber}`
-        });
-        console.log('✅ SMS sent:', response.sid);
-        return true;
+        const key = Buffer.from(encryptionKey, 'utf8');
+        const iv = Buffer.from(encryptedData.substring(0, 32), 'hex'); // Extract IV (first 32 chars)
+        const encryptedText = encryptedData.substring(32); // Remaining text
+
+        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+
+        return decrypted;
     } catch (error) {
-        console.error('❌ Error sending SMS:', error.message);
-        return false;
+        console.error("❌ Decryption Error:", error.message);
+        return null; // Return null if decryption fails
     }
 };
 
-// Send Verification Code
-app.post('/send-code', async (req, res) => {
-    const { phoneNumber, name, email = '' } = req.body;
-    if (!phoneNumber) return res.status(400).json({ error: 'Phone number is required' });
+// 🔹 CRUD Operations for Medical Records
 
-    const code = Math.floor(1000 + Math.random() * 9000);
-    verificationCodes[phoneNumber] = { code, name, email };
-
-    const message = `Your verification code is ${code}`;
-    const smsSent = await sendSms(phoneNumber, message);
-
-    if (smsSent) {
-        res.json({ message: 'Verification code sent!' });
-    } else {
-        res.json({ 
-            message: 'Failed to send SMS. You can enter the universal code 5555 or 55550 to proceed.' 
-        });
-    }
-});
-
-// Verify Code & Save User (Ensuring Unique Phone Numbers)
-app.post('/verify-code', async (req, res) => {
-    const { phoneNumber, code } = req.body;
-    if (!phoneNumber || !code) return res.status(400).json({ error: 'Phone number and code are required' });
-
-    const storedCode = verificationCodes[phoneNumber]?.code;
-
-    if (storedCode === parseInt(code) || code === "5555" || code === "55550") {
-        const { name, email } = verificationCodes[phoneNumber];
-
-        const checkQuery = 'SELECT * FROM users WHERE phoneNumber = ?';
-        connection.query(checkQuery, [phoneNumber], (err, results) => {
-            if (err) return res.status(500).json({ error: 'Database error' });
-
-            if (results.length > 0) {
-                const updateQuery = 'UPDATE users SET name = ?, email = ? WHERE phoneNumber = ?';
-                connection.query(updateQuery, [name, email, phoneNumber], (err) => {
-                    if (err) return res.status(500).json({ error: 'Database update error' });
-                    res.json({ message: 'User updated successfully!', name, email });
-                });
-            } else {
-                const insertQuery = 'INSERT INTO users (name, phoneNumber, email) VALUES (?, ?, ?)';
-                connection.query(insertQuery, [name, phoneNumber, email], (err) => {
-                    if (err) return res.status(500).json({ error: 'Database insert error' });
-                    res.json({ message: 'User registered successfully!', name, email });
-                });
-            }
-        });
-    } else {
-        res.status(400).json({ error: 'Invalid verification code' });
-    }
-});
-
-// Get all doctors
-app.get('/doctors', (req, res) => {
-    const selectQuery = 'SELECT * FROM users WHERE role = "doctor"';
-    connection.query(selectQuery, (err, results) => {
-        if (err) return res.status(500).json({ error: 'Database retrieval error' });
-        res.json({ doctors: results });
-    });
-});
-
-// Store Medical Record
+// 📌 CREATE: Store Medical Record
 app.post('/store-record', (req, res) => {
     const { phoneNumber, diagnosis, prescription } = req.body;
     if (!phoneNumber || !diagnosis || !prescription) {
@@ -131,19 +73,19 @@ app.post('/store-record', (req, res) => {
     const encryptedDiagnosis = encryptData(diagnosis);
     const encryptedPrescription = encryptData(prescription);
 
-    const insertQuery = 'INSERT INTO medical_records (phoneNumber, diagnosis, prescription) VALUES (?, ?, ?)';
-    connection.query(insertQuery, [phoneNumber, encryptedDiagnosis, encryptedPrescription], (err) => {
+    const query = 'INSERT INTO medical_records (phoneNumber, diagnosis, prescription) VALUES (?, ?, ?)';
+    connection.query(query, [phoneNumber, encryptedDiagnosis, encryptedPrescription], (err) => {
         if (err) return res.status(500).json({ error: 'Database insert error' });
         res.json({ message: 'Medical record stored securely!' });
     });
 });
 
-// Retrieve Medical Record
+// 📌 READ: Get Medical Records for a User
 app.get('/get-records/:phoneNumber', (req, res) => {
     const { phoneNumber } = req.params;
 
-    const selectQuery = 'SELECT * FROM medical_records WHERE phoneNumber = ?';
-    connection.query(selectQuery, [phoneNumber], (err, results) => {
+    const query = 'SELECT * FROM medical_records WHERE phoneNumber = ?';
+    connection.query(query, [phoneNumber], (err, results) => {
         if (err) return res.status(500).json({ error: 'Database retrieval error' });
 
         if (results.length === 0) {
@@ -151,54 +93,66 @@ app.get('/get-records/:phoneNumber', (req, res) => {
         }
 
         const decryptedRecords = results.map(record => ({
+            id: record.id,
             diagnosis: decryptData(record.diagnosis),
-            prescription: decryptData(record.prescription)
-        }));
+            prescription: decryptData(record.prescription),
+            createdAt: record.createdAt
+        })).filter(record => record.diagnosis && record.prescription); // Filter out records with decryption errors
 
         res.json({ records: decryptedRecords });
     });
 });
 
-// Get user by ID
-app.get('/user/:id', (req, res) => {
+// 📌 UPDATE: Update an Existing Medical Record
+app.put('/update-record/:id', (req, res) => {
     const { id } = req.params;
-    const selectQuery = 'SELECT * FROM users WHERE id = ?';
+    const { diagnosis, prescription } = req.body;
 
-    connection.query(selectQuery, [id], (err, results) => {
-        if (err) return res.status(500).json({ error: 'Database retrieval error' });
-        
-        if (results.length === 0) {
-            return res.status(404).json({ message: 'User not found' });
+    if (!diagnosis || !prescription) {
+        return res.status(400).json({ error: 'Diagnosis and prescription are required' });
+    }
+
+    const encryptedDiagnosis = encryptData(diagnosis);
+    const encryptedPrescription = encryptData(prescription);
+
+    const query = 'UPDATE medical_records SET diagnosis = ?, prescription = ? WHERE id = ?';
+    connection.query(query, [encryptedDiagnosis, encryptedPrescription, id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database update error' });
+
+        if (results.affectedRows === 0) {
+            return res.status(404).json({ message: 'No record found to update' });
         }
 
-        res.json({ user: results[0] });
+        res.json({ message: 'Medical record updated successfully!' });
     });
 });
 
-// WebSocket setup
-const http = require('http');
-const WebSocket = require('ws');
+// 📌 DELETE: Delete a Medical Record
+app.delete('/delete-record/:id', (req, res) => {
+    const { id } = req.params;
 
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+    const query = 'DELETE FROM medical_records WHERE id = ?';
+    connection.query(query, [id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database delete error' });
 
-wss.on('connection', (ws) => {
-  console.log('Client connected');
+        if (results.affectedRows === 0) {
+            return res.status(404).json({ message: 'No record found to delete' });
+        }
 
-  ws.on('message', (message) => {
-    console.log(`Received message => ${message}`);
-    // Broadcast the message to all clients
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(message);
-      }
+        res.json({ message: 'Medical record deleted successfully!' });
     });
-  });
-
-  ws.on('close', () => {
-    console.log('Client disconnected');
-  });
 });
+
+// 🔹 Database Schema for Medical Records (Run this in MySQL)
+/*
+CREATE TABLE medical_records (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    phoneNumber VARCHAR(15),
+    diagnosis TEXT NOT NULL,
+    prescription TEXT NOT NULL,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+*/
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
