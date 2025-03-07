@@ -4,7 +4,7 @@ const mysql = require('mysql2');
 const crypto = require('crypto'); // For data encryption
 const twilio = require('twilio');
 require('dotenv').config();  // Load environment variables
-const  cors  = require('cors')
+const cors = require('cors');
 
 const accountSid = process.env.ACCOUNT_SID;
 const authToken = process.env.AUTH_TOKEN;
@@ -27,7 +27,7 @@ app.use(cors());
 
 let verificationCodes = {};
 
-// 🔹 Function to Encrypt Medical Data
+// Function to Encrypt Medical Data
 const encryptData = (data) => {
     const cipher = crypto.createCipheriv('aes-256-cbc', encryptionKey.substring(0, 32), encryptionKey.substring(0, 16));
     let encrypted = cipher.update(data, 'utf8', 'hex');
@@ -35,7 +35,7 @@ const encryptData = (data) => {
     return encrypted;
 };
 
-// 🔹 Function to Decrypt Medical Data
+// Function to Decrypt Medical Data
 const decryptData = (encryptedData) => {
     const decipher = crypto.createDecipheriv('aes-256-cbc', encryptionKey.substring(0, 32), encryptionKey.substring(0, 16));
     let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
@@ -43,7 +43,7 @@ const decryptData = (encryptedData) => {
     return decrypted;
 };
 
-// 🔹 Send SMS function
+// Send SMS function
 const sendSms = async (phoneNumber, message) => {
     try {
         const response = await client.messages.create({
@@ -59,7 +59,7 @@ const sendSms = async (phoneNumber, message) => {
     }
 };
 
-// 🔹 Send Verification Code
+// Send Verification Code
 app.post('/send-code', async (req, res) => {
     const { phoneNumber, name, email = '' } = req.body;
     if (!phoneNumber) return res.status(400).json({ error: 'Phone number is required' });
@@ -79,7 +79,7 @@ app.post('/send-code', async (req, res) => {
     }
 });
 
-// 📌 Verify Code & Save User (Ensuring Unique Phone Numbers)
+// Verify Code & Save User (Ensuring Unique Phone Numbers)
 app.post('/verify-code', async (req, res) => {
     const { phoneNumber, code } = req.body;
     if (!phoneNumber || !code) return res.status(400).json({ error: 'Phone number and code are required' });
@@ -112,7 +112,16 @@ app.post('/verify-code', async (req, res) => {
     }
 });
 
-// 🔹 Store Medical Record
+// Get all doctors
+app.get('/doctors', (req, res) => {
+    const selectQuery = 'SELECT * FROM users WHERE role = "doctor"';
+    connection.query(selectQuery, (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database retrieval error' });
+        res.json({ doctors: results });
+    });
+});
+
+// Store Medical Record
 app.post('/store-record', (req, res) => {
     const { phoneNumber, diagnosis, prescription } = req.body;
     if (!phoneNumber || !diagnosis || !prescription) {
@@ -129,7 +138,7 @@ app.post('/store-record', (req, res) => {
     });
 });
 
-// 🔹 Retrieve Medical Record
+// Retrieve Medical Record
 app.get('/get-records/:phoneNumber', (req, res) => {
     const { phoneNumber } = req.params;
 
@@ -150,16 +159,46 @@ app.get('/get-records/:phoneNumber', (req, res) => {
     });
 });
 
-// 🔹 Database Schema for Medical Records (Run this in MySQL)
-/*
-CREATE TABLE medical_records (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    phoneNumber VARCHAR(15),
-    diagnosis TEXT NOT NULL,
-    prescription TEXT NOT NULL,
-    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-*/
+// Get user by ID
+app.get('/user/:id', (req, res) => {
+    const { id } = req.params;
+    const selectQuery = 'SELECT * FROM users WHERE id = ?';
+
+    connection.query(selectQuery, [id], (err, results) => {
+        if (err) return res.status(500).json({ error: 'Database retrieval error' });
+        
+        if (results.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json({ user: results[0] });
+    });
+});
+
+// WebSocket setup
+const http = require('http');
+const WebSocket = require('ws');
+
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws) => {
+  console.log('Client connected');
+
+  ws.on('message', (message) => {
+    console.log(`Received message => ${message}`);
+    // Broadcast the message to all clients
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  });
+
+  ws.on('close', () => {
+    console.log('Client disconnected');
+  });
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
